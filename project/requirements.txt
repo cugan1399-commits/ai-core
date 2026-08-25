@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+sqlalchemy[asyncio]>=2.0
+asyncpg
+alembic
+celery[redis]
+httpx
+python-multipart
+pgvector
+sentence-transformers
+anthropic

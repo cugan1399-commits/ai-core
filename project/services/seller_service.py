@@ -22,6 +22,8 @@ CLIENT_ID в теле запроса при OAuth-приложении, а не 
 """
 from __future__ import annotations
 
+from functools import lru_cache
+
 from anthropic import AsyncAnthropic
 from sqlalchemy import select
 
@@ -31,7 +33,21 @@ from core.db import get_session
 from core.embeddings import embed_text
 from core.models import Client, KnowledgeChunk
 
-_anthropic_client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+
+@lru_cache(maxsize=1)
+def _get_anthropic_client() -> AsyncAnthropic:
+    """
+    Ленивая инициализация — модуль testing_service (и весь остальной сервис)
+    должен уметь стартовать и работать без ANTHROPIC_API_KEY, если seller-модуль
+    ещё не используется (например, на этапе тестирования на Free-тарифе перед
+    тем, как оплачивать API). Падаем только тут, в момент реального вызова.
+    """
+    if not ANTHROPIC_API_KEY:
+        raise RuntimeError(
+            "ANTHROPIC_API_KEY не задан — модуль 'seller' не может отвечать без него. "
+            "Задай переменную окружения перед активацией этого модуля клиенту."
+        )
+    return AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
 
 SYSTEM_PROMPT = f"""Ты — AI-консультант компании, отвечаешь клиентам в чате.
 Отвечай ТОЛЬКО на основе предоставленного ниже контекста (каталог товаров/услуг
@@ -91,7 +107,7 @@ async def _generate_answer(question: str, chunks: list[KnowledgeChunk]) -> str:
 
     context = "\n\n".join(f"[{c.source_type}] {c.text}" for c in chunks)
 
-    response = await _anthropic_client.messages.create(
+    response = await _get_anthropic_client().messages.create(
         model=ANTHROPIC_MODEL,
         max_tokens=500,
         system=SYSTEM_PROMPT,

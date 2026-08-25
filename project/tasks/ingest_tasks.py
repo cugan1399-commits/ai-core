@@ -12,12 +12,11 @@
 """
 from __future__ import annotations
 
-import asyncio
-
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from adapters.bitrix.bitrix_client import call_bitrix_method
+from core.async_utils import run_async
 from core.db import get_session
 from core.embeddings import embed_texts
 from core.models import Client, KnowledgeChunk
@@ -88,8 +87,12 @@ def ingest_catalog_task() -> None:
     """
     Периодическая задача (запускать по расписанию Celery beat, например раз в сутки):
     синхронизирует каталог для ВСЕХ клиентов с активным модулем 'seller'.
+
+    ПРИМЕЧАНИЕ (Free-тариф без Background Worker): без отдельного beat-процесса эта
+    задача не запустится сама по себе ни разу. Пока в таком режиме — дёргай её вручную
+    через временный админ-эндпоинт (см. README, раздел "Free-тариф без воркера").
     """
-    asyncio.run(_ingest_all_catalogs())
+    run_async(_ingest_all_catalogs())
 
 
 async def _ingest_all_catalogs() -> None:

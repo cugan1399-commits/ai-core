@@ -9,10 +9,9 @@
 """
 from __future__ import annotations
 
-import asyncio
-
 from sqlalchemy import select
 
+from core.async_utils import run_async
 from core.db import get_session
 from core.models import Client
 from core.queue import celery_app
@@ -23,11 +22,14 @@ from services import MODULE_HANDLERS
 def process_bot_message(self, member_id: str, module_name: str, payload: dict) -> None:
     """
     Синхронная обёртка (Celery-таск) вокруг асинхронной обработки.
-    Celery-воркер сам по себе синхронный, поэтому здесь единственный async-запуск
-    на задачу — вся внутренняя логика (services/*, bitrix_client) уже async/await.
+    В обычном режиме Celery-воркер сам по себе синхронный (нет своего event loop),
+    поэтому запуск async-корутины здесь безопасен напрямую. Но эта же функция
+    вызывается и в eager-режиме (см. config.CELERY_TASK_ALWAYS_EAGER) прямо из
+    async-обработчика FastAPI — там уже ЕСТЬ работающий event loop, и обычный
+    asyncio.run() упал бы с RuntimeError. run_async() учитывает оба случая.
     """
     try:
-        asyncio.run(_process(member_id, module_name, payload))
+        run_async(_process(member_id, module_name, payload))
     except Exception as exc:  # noqa: BLE001 — осознанный catch-all для ретрая Celery
         raise self.retry(exc=exc)
 

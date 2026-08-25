@@ -11,7 +11,7 @@
 """
 from celery import Celery
 
-from config import CELERY_BROKER_URL, CELERY_RESULT_BACKEND
+from config import CELERY_BROKER_URL, CELERY_RESULT_BACKEND, CELERY_TASK_ALWAYS_EAGER
 
 celery_app = Celery(
     "core",
@@ -32,4 +32,6 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,  # не хватать больше задач, чем воркер реально обрабатывает
     task_default_retry_delay=10,
     task_time_limit=60,
+    task_always_eager=CELERY_TASK_ALWAYS_EAGER,
+    task_eager_propagates=True,  # в eager-режиме исключение из задачи не проглатывается молча
 )

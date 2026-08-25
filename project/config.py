@@ -11,6 +11,10 @@ DATABASE_URL = os.environ["DATABASE_URL"]  # например: postgresql+asyncp
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 CELERY_BROKER_URL = REDIS_URL
 CELERY_RESULT_BACKEND = REDIS_URL
+# Режим для бесплатного тарифа без отдельного Background Worker: задачи выполняются
+# синхронно прямо внутри веб-процесса, без реальной очереди/брокера. Осознанный
+# временный компромисс — см. README, раздел "Free-тариф без воркера".
+CELERY_TASK_ALWAYS_EAGER = os.environ.get("CELERY_TASK_ALWAYS_EAGER", "False").lower() == "true"
 
 # --- Bitrix24: одно маркетплейс-приложение на всех клиентов ---
 BITRIX_CLIENT_ID = os.environ["BITRIX_CLIENT_ID"]
@@ -24,8 +28,8 @@ BITRIX_OAUTH_TOKEN_URL = "https://oauth.bitrix.info/oauth/token"
 EMBEDDING_MODEL_NAME = "paraphrase-multilingual-MiniLM-L12-v2"
 EMBEDDING_DIMENSIONS = 384  # размерность вектора именно этой модели
 
-ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
-ANTHROPIC_MODEL = "claude-sonnet-4-6"
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")  # опционален: нужен только модулю 'seller'
+ANTHROPIC_MODEL = "claude-sonnet-5"
 
 RAG_TOP_K = 5  # сколько похожих чанков подавать в промпт на один вопрос
 ESCALATION_MARKER = "ESCALATE_TO_OPERATOR"  # структурированный сигнал вместо парсинга текста ответа

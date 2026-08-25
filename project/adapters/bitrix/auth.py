@@ -39,28 +39,31 @@ DEFAULT_MODULES_ON_INSTALL: list[str] = []
 @router.post("/oauth/install")
 async def oauth_install(request: Request):
     """
-    ДИАГНОСТИКА: на реальном портале Bitrix прислал запрос без поля DOMAIN,
-    из-за чего form["DOMAIN"] падал с KeyError (500) ещё до того, как мы успели
-    увидеть, что вообще пришло. Bitrix для локальных приложений иногда шлёт
-    служебный/проверочный запрос на handler до основного — нужно не падать
-    на нём, а залогировать реальный payload и вернуться 200 OK.
+    Реальный формат подтверждён логами тестового портала: Bitrix шлёт событие
+    ONAPPINSTALL, все нужные данные — во вложенных (по имени ключа) полях
+    auth[...], а НЕ в плоских DOMAIN/MEMBER_ID/AUTH_ID/REFRESH_ID/APP_SID,
+    как ошибочно предполагалось в первой версии этого файла (то было взято
+    из исходного ТЗ без сверки с реальным вызовом).
+
+    form-urlencoded не поддерживает вложенность нативно — Bitrix кодирует её
+    прямо в имя ключа (буквально строка "auth[domain]"), поэтому и читаем
+    так же, строкой, а не как настоящий вложенный dict.
     """
     form = await request.form()
-    logger.info("Получен запрос на /oauth/install, поля: %s", dict(form))
+    logger.info("Получен запрос на /oauth/install, событие: %s, поля: %s", form.get("event"), dict(form))
 
-    domain = form.get("DOMAIN")
-    member_id = form.get("MEMBER_ID")
-    access_token = form.get("AUTH_ID")
-    refresh_token = form.get("REFRESH_ID")
-    application_token = form.get("APP_SID", "")
+    domain = form.get("auth[domain]")
+    member_id = form.get("auth[member_id]")
+    access_token = form.get("auth[access_token]")
+    refresh_token = form.get("auth[refresh_token]")
+    application_token = form.get("auth[application_token]", "")
 
     if not all([domain, member_id, access_token, refresh_token]):
-        # Неполный запрос (служебный пинг Bitrix или другой формат) — не падаем,
-        # просто подтверждаем получение. Проверь Render-логи по строке выше —
-        # там точный список полей, который реально прислал Bitrix.
+        # Неполный запрос (служебный пинг Bitrix или другое событие) — не падаем,
+        # просто подтверждаем получение. Смотри Render-логи по строке выше.
         logger.warning(
-            "Неполные данные установки (нет одного из DOMAIN/MEMBER_ID/AUTH_ID/REFRESH_ID) — "
-            "пропускаем создание клиента, ждём следующий запрос."
+            "Неполные данные установки (нет одного из auth[domain]/auth[member_id]/"
+            "auth[access_token]/auth[refresh_token]) — пропускаем создание клиента."
         )
         return {"result": True}
 
@@ -142,7 +145,13 @@ def _public_base_url() -> str:
 @router.post("/oauth/uninstall")
 async def oauth_uninstall(request: Request):
     form = await request.form()
-    member_id = form.get("MEMBER_ID") or form.get("auth[member_id]")
+    logger.info("Получен запрос на /oauth/uninstall, событие: %s, поля: %s", form.get("event"), dict(form))
+
+    member_id = form.get("auth[member_id]") or form.get("MEMBER_ID") or form.get("member_id")
+
+    if not member_id:
+        logger.warning("Не удалось найти member_id в запросе на /oauth/uninstall — смотри поля выше.")
+        return {"result": True}
 
     async with get_session() as session:
         result = await session.execute(select(Client).where(Client.member_id == member_id))

@@ -53,27 +53,25 @@ alembic revision --autogenerate -m "init"
 alembic upgrade head
 ```
 
-## Запуск
+## Деплой на Render
 
-```bash
-pip install -r requirements.txt
-# sentence-transformers тянет за собой torch — установка займёт время и место на диске.
+Один Docker-образ (`Dockerfile` в корне), три сервиса из него с разными командами запуска:
 
-# переменные окружения:
-# DATABASE_URL, REDIS_URL, BITRIX_CLIENT_ID, BITRIX_CLIENT_SECRET,
-# PUBLIC_BASE_URL, ANTHROPIC_API_KEY
+| Сервис | Тип | Команда запуска |
+|---|---|---|
+| веб | Web Service | `uvicorn main:app --host 0.0.0.0 --port $PORT` |
+| воркер | Background Worker | `celery -A core.queue.celery_app worker --loglevel=info` |
+| beat (синхронизация каталога) | Background Worker | `celery -A core.queue.celery_app beat --loglevel=info` |
 
-alembic upgrade head
+Плюс:
+- **Render Postgres** — pgvector поддерживается нативно, `CREATE EXTENSION vector` (уже встроено
+  в `alembic/env.py`, отдельно делать не нужно).
+- **Render Key Value (Redis)** — для `REDIS_URL` (Celery broker/backend).
+- Миграцию (`alembic upgrade head`) стоит запускать как **Pre-Deploy Command** веб-сервиса
+  или разовый Job — не как часть обычного старта `uvicorn`.
 
-# веб-процесс
-uvicorn main:app --host 0.0.0.0 --port 8000
+## Запуск локально
 
-# воркер очереди (отдельный процесс)
-celery -A core.queue.celery_app worker --loglevel=info
-
-# периодическая синхронизация каталога (отдельный процесс)
-celery -A core.queue.celery_app beat --loglevel=info
-```
 
 ## Известные допущения / что нужно доделать перед реальным клиентом
 
@@ -86,3 +84,17 @@ celery -A core.queue.celery_app beat --loglevel=info
 - `adapters/telegram/`, `adapters/web_parser/` — будущие каналы, пока не созданы.
 - Если в БД уже есть данные в старом формате `bot_ids = {"module": <int>}` (до миграции
   на v2) — нужна отдельная миграция данных, не только схемы.
+
+```bash
+pip install -r requirements.txt
+# sentence-transformers тянет за собой torch — установка займёт время и место на диске.
+
+# переменные окружения:
+# DATABASE_URL, REDIS_URL, BITRIX_CLIENT_ID, BITRIX_CLIENT_SECRET,
+# PUBLIC_BASE_URL, ANTHROPIC_API_KEY
+
+alembic upgrade head
+uvicorn main:app --host 0.0.0.0 --port 8000
+celery -A core.queue.celery_app worker --loglevel=info
+celery -A core.queue.celery_app beat --loglevel=info
+```

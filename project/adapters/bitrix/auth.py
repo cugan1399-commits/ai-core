@@ -16,6 +16,7 @@ OAuth-хендшейк с Bitrix24.
 """
 from __future__ import annotations
 
+import logging
 import secrets
 
 from fastapi import APIRouter, Request
@@ -26,6 +27,7 @@ from config import ALLOWED_MODULES
 from core.db import get_session
 from core.models import Client
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # На установке активируем этот набор модулей по умолчанию для НОВОГО клиента.
@@ -36,12 +38,31 @@ DEFAULT_MODULES_ON_INSTALL: list[str] = []
 
 @router.post("/oauth/install")
 async def oauth_install(request: Request):
+    """
+    ДИАГНОСТИКА: на реальном портале Bitrix прислал запрос без поля DOMAIN,
+    из-за чего form["DOMAIN"] падал с KeyError (500) ещё до того, как мы успели
+    увидеть, что вообще пришло. Bitrix для локальных приложений иногда шлёт
+    служебный/проверочный запрос на handler до основного — нужно не падать
+    на нём, а залогировать реальный payload и вернуться 200 OK.
+    """
     form = await request.form()
-    domain = form["DOMAIN"]
-    member_id = form["MEMBER_ID"]
-    access_token = form["AUTH_ID"]
-    refresh_token = form["REFRESH_ID"]
+    logger.info("Получен запрос на /oauth/install, поля: %s", dict(form))
+
+    domain = form.get("DOMAIN")
+    member_id = form.get("MEMBER_ID")
+    access_token = form.get("AUTH_ID")
+    refresh_token = form.get("REFRESH_ID")
     application_token = form.get("APP_SID", "")
+
+    if not all([domain, member_id, access_token, refresh_token]):
+        # Неполный запрос (служебный пинг Bitrix или другой формат) — не падаем,
+        # просто подтверждаем получение. Проверь Render-логи по строке выше —
+        # там точный список полей, который реально прислал Bitrix.
+        logger.warning(
+            "Неполные данные установки (нет одного из DOMAIN/MEMBER_ID/AUTH_ID/REFRESH_ID) — "
+            "пропускаем создание клиента, ждём следующий запрос."
+        )
+        return {"result": True}
 
     async with get_session() as session:
         result = await session.execute(select(Client).where(Client.member_id == member_id))

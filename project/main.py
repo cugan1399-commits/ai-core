@@ -6,10 +6,14 @@
 безопасно эволюционировать схему (новые поля, индексы) без потери контроля
 над продакшен-базой.
 """
+import logging
+
 from fastapi import FastAPI
 
 from adapters.bitrix.auth import router as bitrix_auth_router
 from adapters.bitrix.bot_handler import router as bitrix_bot_router
+
+logging.basicConfig(level=logging.INFO)
 
 app = FastAPI(title="Multi-tenant Bitrix24 AI core")
 

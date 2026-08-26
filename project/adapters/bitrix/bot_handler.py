@@ -1,22 +1,29 @@
 """
 Единственная точка входа для событий чат-ботов Bitrix24.
 
-МИГРАЦИЯ v1 → v2: событие теперь ONIMBOTV2MESSAGEADD (не ONIMBOTMESSAGEADD),
-приходит JSON-телом (не form-urlencoded), поля camelCase и вложенные:
-  data.bot.id           — какой бот получил сообщение (замена BOT_ID)
-  data.message.text      — текст сообщения (замена MESSAGE)
-  data.message.id        — id сообщения
-  data.message.authorId  — id автора сообщения (замена USER_ID)
-                            ЗАФИКСИРОВАТЬ ПЕРЕД ПРОДАКШЕНОМ: точное имя поля
-                            для id автора нужно свериться с реальным событием
-                            в тестовом портале — в официальных примерах явно
-                            не приводится, здесь — обоснованное предположение
-                            по общей конвенции API v2 (camelCase + "...Id").
-  data.chat.id            — id чата (используется в imopenlines.bot.session.*)
-  data.chat.dialogId      — id диалога (используется в imbot.v2.Chat.Message.send)
-  data.chat.entityType    — 'LINES' для Открытых линий, иначе — обычный чат/личка
+ФОРМАТ ПОДТВЕРЖДЁН НА РЕАЛЬНОМ ПОРТАЛЕ (2026-08-26): событие ONIMBOTV2MESSAGEADD
+приходит НЕ JSON-телом, как предполагалось изначально, а form-urlencoded с
+bracket-нотацией в именах ключей — точно так же, как /oauth/install. Разбираем
+его тем же способом: читаем плоские ключи вида "data[message][text]" напрямую
+через request.form(), без сборки настоящего вложенного dict.
 
-Ключевое решение (зафиксировано в обсуждении): маршрутизация идёт по data.bot.id,
+Подтверждённые на реальном событии ключи:
+  data[bot][id]                    — какой бот получил сообщение
+  data[bot][auth][domain]          — домен портала
+                                      ВАЖНО: auth лежит ВНУТРИ data[bot][auth],
+                                      а НЕ отдельным top-level полем "auth" —
+                                      это тоже отличается от первого предположения.
+  data[bot][auth][application_token]
+  data[message][id]                — id сообщения
+  data[message][text]              — текст сообщения
+  data[message][authorId]          — id автора (camelCase-вариант подтверждён;
+                                      в событии также дублируется snake_case
+                                      author_id — используем camelCase)
+  data[chat][id]                   — id чата
+  data[chat][dialogId]             — id диалога (для imbot.v2.Chat.Message.send)
+  data[chat][entityType]           — 'LINES' для Открытых линий, иначе пусто
+
+Ключевое решение (зафиксировано в обсуждении): маршрутизация идёт по бот-id,
 а НЕ циклом по всем enabled_modules клиента — у каждого модуля свой отдельный бот
 (см. auth.py/_ensure_bots_registered), поэтому входящее сообщение однозначно
 принадлежит ровно одному модулю.
@@ -28,7 +35,6 @@
 """
 from __future__ import annotations
 
-import json
 import logging
 
 from fastapi import APIRouter, HTTPException, Request
@@ -44,41 +50,29 @@ router = APIRouter()
 
 @router.post("/bot/handler")
 async def bot_handler(request: Request):
-    raw_body = await request.body()
+    form = await request.form()
 
-    if not raw_body:
-        # Пустое тело — служебный/пинг-запрос (например, от Render при выходе
+    if not form:
+        # Пустое тело — служебный/пинг-запрос (например, при выходе Render
         # из сна) либо обрыв соединения на стороне Bitrix. Не наша ошибка,
-        # но и не событие, которое можно обработать — просто подтверждаем
-        # получение и не падаем 500-кой.
-        logger.warning("Пустое тело запроса на /bot/handler — пропускаем.")
+        # но и не событие, которое можно обработать.
+        logger.warning("Пустой запрос на /bot/handler — пропускаем.")
         return {"result": True}
 
-    try:
-        body = json.loads(raw_body)
-    except json.JSONDecodeError:
-        # ВРЕМЕННО, для диагностики реального формата события: логируем как есть,
-        # включая случай form-urlencoded вместо JSON — уберём после того как
-        # сверим точный формат ONIMBOTV2MESSAGEADD на этом портале.
-        logger.warning("Не удалось распарсить тело /bot/handler как JSON: %r", raw_body[:2000])
-        return {"result": True}
+    event = form.get("event")
+    logger.info("Получено событие на /bot/handler: %s, поля: %s", event, dict(form))
 
-    logger.info("Получено событие на /bot/handler: %s", body)
-
-    event = body.get("event")
     if event != "ONIMBOTV2MESSAGEADD":
         # Другие события (ONIMBOTV2JOINCHAT и т.п.) сюда тоже могут прийти
         # в будущем — пока просто подтверждаем получение и не обрабатываем.
         return {"result": True}
 
-    data = body.get("data", {})
-    auth = body.get("auth", {})
-
-    domain = auth.get("domain")
-    application_token = auth.get("application_token")
-    bot_id_raw = data.get("bot", {}).get("id")
+    bot_id_raw = form.get("data[bot][id]")
+    domain = form.get("data[bot][auth][domain]")
+    application_token = form.get("data[bot][auth][application_token]")
 
     if not domain or not application_token or bot_id_raw is None:
+        logger.warning("Неполные данные события ONIMBOTV2MESSAGEADD — пропускаем.")
         return {"result": True}
 
     async with get_session() as session:
@@ -102,7 +96,19 @@ async def bot_handler(request: Request):
         # Событие от неизвестного/чужого бота — игнорируем, это не ошибка.
         return {"result": True}
 
+    # Собираем плоский payload с нужными полями для задачи — дальше по конвейеру
+    # (tasks/dispatch.py, services/*) работаем с этими простыми ключами, а не
+    # с сырыми bracket-именами формы.
+    payload = {
+        "message_id": form.get("data[message][id]"),
+        "message_text": form.get("data[message][text]"),
+        "author_id": form.get("data[message][authorId]"),
+        "chat_id": form.get("data[chat][id]"),
+        "dialog_id": form.get("data[chat][dialogId]"),
+        "entity_type": form.get("data[chat][entityType]"),
+    }
+
     # Ставим задачу в очередь и сразу отвечаем Bitrix — не ждём выполнения.
-    process_bot_message.delay(member_id=client.member_id, module_name=module_name, payload=data)
+    process_bot_message.delay(member_id=client.member_id, module_name=module_name, payload=payload)
 
     return {"result": True}

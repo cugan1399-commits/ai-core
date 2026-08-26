@@ -3,9 +3,10 @@
 
 ФОРМАТ ПОДТВЕРЖДЁН НА РЕАЛЬНОМ ПОРТАЛЕ (2026-08-26): событие ONIMBOTV2MESSAGEADD
 приходит НЕ JSON-телом, как предполагалось изначально, а form-urlencoded с
-bracket-нотацией в именах ключей — точно так же, как /oauth/install. Разбираем
-его тем же способом: читаем плоские ключи вида "data[message][text]" напрямую
-через request.form(), без сборки настоящего вложенного dict.
+bracket-нотацией в именах ключей — точно так же, как /oauth/install. Читаем
+плоские ключи вида "data[message][text]" через request.form(), а затем
+пересобираем их обратно во вложенный dict — именно такую форму (payload["message"],
+payload["chat"]) ожидают services/*.handle() (см. testing_service.py).
 
 Подтверждённые на реальном событии ключи:
   data[bot][id]                    — какой бот получил сообщение
@@ -96,16 +97,24 @@ async def bot_handler(request: Request):
         # Событие от неизвестного/чужого бота — игнорируем, это не ошибка.
         return {"result": True}
 
-    # Собираем плоский payload с нужными полями для задачи — дальше по конвейеру
-    # (tasks/dispatch.py, services/*) работаем с этими простыми ключами, а не
-    # с сырыми bracket-именами формы.
+    # ВАЖНО: services/*.handle() (testing_service.py, seller_service.py) написаны
+    # под контракт "payload — это вложенный dict `data` из события", то есть
+    # payload["message"]["authorId"], payload["chat"]["dialogId"] и т.д. — это
+    # был исходный расчёт на JSON-тело. Раз реальный формат оказался
+    # form-urlencoded с плоскими bracket-ключами, а не JSON, пересобираем их
+    # обратно в ту же вложенную форму здесь — на границе адаптера, — чтобы не
+    # трогать контракт и код самих сервисов.
     payload = {
-        "message_id": form.get("data[message][id]"),
-        "message_text": form.get("data[message][text]"),
-        "author_id": form.get("data[message][authorId]"),
-        "chat_id": form.get("data[chat][id]"),
-        "dialog_id": form.get("data[chat][dialogId]"),
-        "entity_type": form.get("data[chat][entityType]"),
+        "message": {
+            "id": form.get("data[message][id]"),
+            "text": form.get("data[message][text]"),
+            "authorId": form.get("data[message][authorId]"),
+        },
+        "chat": {
+            "id": form.get("data[chat][id]"),
+            "dialogId": form.get("data[chat][dialogId]"),
+            "entityType": form.get("data[chat][entityType]"),
+        },
     }
 
     # Ставим задачу в очередь и сразу отвечаем Bitrix — не ждём выполнения.

@@ -47,7 +47,11 @@ class Client(Base):
     __tablename__ = "clients"
 
     member_id: Mapped[str] = mapped_column(String, primary_key=True)
-    domain: Mapped[str] = mapped_column(String, nullable=False)
+    # unique=True: TestSession ссылается на domain как на внешний ключ (ниже) —
+    # Postgres требует, чтобы столбец на другом конце FOREIGN KEY был уникальным.
+    # По факту у каждого портала Bitrix ровно один домен, так что это честное
+    # ограничение, а не искусственное.
+    domain: Mapped[str] = mapped_column(String, nullable=False, unique=True)
 
     access_token: Mapped[str] = mapped_column(String, nullable=False)
     refresh_token: Mapped[str] = mapped_column(String, nullable=False)

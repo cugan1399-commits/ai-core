@@ -28,6 +28,9 @@
 """
 from __future__ import annotations
 
+import json
+import logging
+
 from fastapi import APIRouter, HTTPException, Request
 from sqlalchemy import select
 
@@ -35,12 +38,32 @@ from core.db import get_session
 from core.models import Client
 from tasks.dispatch import process_bot_message
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
 @router.post("/bot/handler")
 async def bot_handler(request: Request):
-    body = await request.json()
+    raw_body = await request.body()
+
+    if not raw_body:
+        # Пустое тело — служебный/пинг-запрос (например, от Render при выходе
+        # из сна) либо обрыв соединения на стороне Bitrix. Не наша ошибка,
+        # но и не событие, которое можно обработать — просто подтверждаем
+        # получение и не падаем 500-кой.
+        logger.warning("Пустое тело запроса на /bot/handler — пропускаем.")
+        return {"result": True}
+
+    try:
+        body = json.loads(raw_body)
+    except json.JSONDecodeError:
+        # ВРЕМЕННО, для диагностики реального формата события: логируем как есть,
+        # включая случай form-urlencoded вместо JSON — уберём после того как
+        # сверим точный формат ONIMBOTV2MESSAGEADD на этом портале.
+        logger.warning("Не удалось распарсить тело /bot/handler как JSON: %r", raw_body[:2000])
+        return {"result": True}
+
+    logger.info("Получено событие на /bot/handler: %s", body)
 
     event = body.get("event")
     if event != "ONIMBOTV2MESSAGEADD":

@@ -106,14 +106,37 @@ async def _send_message(client: Client, bot_id: int, dialog_id: str, text: str) 
 async def _report_result_to_crm(client: Client, user_id: int, score: int, total: int) -> None:
     """
     Обновляет смарт-процесс аттестации в CRM клиента.
-    ВАЖНО: entityTypeId и ID полей смарт-процесса — конфигурация конкретного
-    портала, здесь намеренно не захардкожены. См. README про необходимость
-    добавить per-client маппинг полей перед продакшен-запуском у реального клиента.
+
+    Конфигурация зафиксирована для этого клиента/портала (2026-08-26):
+      entityTypeId = 1038 (смарт-процесс "Аттестация менеджеров")
+      UF_CRM_7_1787776021255 — поле "Результат теста" (число)
+      UF_CRM_7_1787776088286 — поле "Статус аттестации" (список, enumeration).
+        ID вариантов подтверждены через crm.item.fields:
+          45 — "Пройдена"
+          47 — "Не пройдена"
+          49 — "Требуется пересдача" (пока не используется — нет критерия,
+               когда назначать именно этот статус, а не "Не пройдена")
+
+    Критерий "пройдена" — все ответы верны (score == total). Если нужен другой
+    порог (например, 70% и выше) или использование статуса "Требуется
+    пересдача" — поменять только STATUS_PASSED/STATUS_FAILED ниже.
+
+    Это создаёт НОВУЮ запись смарт-процесса на каждое прохождение теста
+    (crm.item.add), а не ищет существующую — если нужно обновлять одну и ту же
+    запись на пользователя, потребуется отдельно хранить её id (например, в
+    TestSession) и вызывать crm.item.update вместо crm.item.add.
     """
-    # Пример вызова, требует конфигурации per-client полей до реального использования:
-    # await call_bitrix_method(client, "crm.item.update", {
-    #     "entityTypeId": <entity_type_id_клиента>,
-    #     "id": <id_записи_аттестации>,
-    #     "fields": {"<поле_счёта>": score, "<поле_статуса>": "completed"},
-    # })
-    pass
+    STATUS_PASSED = 45
+    STATUS_FAILED = 47
+
+    status_id = STATUS_PASSED if score == total else STATUS_FAILED
+
+    await call_bitrix_method(
+        client,
+        "crm.item.add",
+        {
+            "entityTypeId": 1038,
+            "fields[UF_CRM_7_1787776021255]": score,
+            "fields[UF_CRM_7_1787776088286]": status_id,
+        },
+    )

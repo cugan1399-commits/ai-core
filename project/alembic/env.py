@@ -40,6 +40,13 @@ def do_run_migrations(connection) -> None:
     with context.begin_transaction():
         context.run_migrations()
 
+    # ВАЖНО: явный commit. AsyncConnection в SQLAlchemy 2.0 работает в режиме
+    # autobegin и НЕ коммитит транзакцию сама — при закрытии соединения без
+    # явного commit() происходит implicit rollback, даже если Alembic отработал
+    # без единой ошибки. Раньше на это полагались молча, из-за чего таблицы
+    # физически не создавались в базе, хотя лог показывал "успешную" миграцию.
+    connection.commit()
+
 
 async def run_migrations_online() -> None:
     connectable = create_async_engine(DATABASE_URL)

@@ -33,6 +33,7 @@ from datetime import datetime
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     JSON,
+    BigInteger,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -193,7 +194,7 @@ class SellerSession(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     pipeline_id: Mapped[int] = mapped_column(ForeignKey("seller_pipelines.id"), nullable=False)
 
-    telegram_chat_id: Mapped[int] = mapped_column(Integer, nullable=False)
+        telegram_chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
     # Bitrix-стороние идентификаторы, полученные от imconnector.send.messages
     # при первом сообщении клиента. None, пока чат ещё не создан в Bitrix.

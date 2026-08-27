@@ -15,6 +15,7 @@ from sqlalchemy import text
 from adapters.bitrix.auth import router as bitrix_auth_router
 from adapters.bitrix.bot_handler import router as bitrix_bot_router
 from adapters.telegram.bot_handler import router as telegram_bot_router
+from adapters.telegram.admin import router as telegram_admin_router
 from config import DATABASE_URL
 from core.db import get_session
 
@@ -25,6 +26,7 @@ app = FastAPI(title="Multi-tenant Bitrix24 AI core")
 app.include_router(bitrix_auth_router)
 app.include_router(bitrix_bot_router)
 app.include_router(telegram_bot_router)
+app.include_router(telegram_admin_router)
 
 
 @app.get("/health")

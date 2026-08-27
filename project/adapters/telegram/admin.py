@@ -15,15 +15,23 @@
 from __future__ import annotations
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from config import PUBLIC_BASE_URL
+from config import ADMIN_API_KEY, PUBLIC_BASE_URL
 from core.db import get_session
 from core.models import Client, SellerPipeline
 
-router = APIRouter(prefix="/telegram/admin", tags=["telegram-admin"])
+def verify_admin_key(x_admin_key: str = Header(...)) -> None:
+    if x_admin_key != ADMIN_API_KEY:
+        raise HTTPException(401, "Неверный или отсутствующий X-Admin-Key")
+
+router = APIRouter(
+    prefix="/telegram/admin",
+    tags=["telegram-admin"],
+    dependencies=[Depends(verify_admin_key)],
+)
 
 
 class FieldSchemaItem(BaseModel):

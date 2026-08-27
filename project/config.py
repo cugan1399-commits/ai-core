@@ -4,6 +4,10 @@
 """
 import os
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 # --- База данных ---
 DATABASE_URL = os.environ["DATABASE_URL"]  # например: postgresql+asyncpg://user:pass@host/db
 
@@ -45,3 +49,11 @@ ALLOWED_MODULES = {
 
 # --- Прочее ---
 WEBHOOK_TIMEOUT_SECONDS = 5  # сколько мы даём себе на быстрый ответ 200 OK Битриксу
+
+
+# --- Telegram (модуль seller) ---
+# Публичный домен приложения — нужен, чтобы сформировать URL вебхука при
+# подключении нового Telegram-бота (PUBLIC_BASE_URL + "/telegram/webhook/{token}").
+
+PUBLIC_BASE_URL = os.environ["PUBLIC_BASE_URL"]  # например: https://your-app.example.com
+ADMIN_API_KEY = os.environ["ADMIN_API_KEY"]  # защита /telegram/admin/*

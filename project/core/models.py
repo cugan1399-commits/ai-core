@@ -18,6 +18,13 @@
 API v1). Bitrix24 пометил imbot.* как устаревший в пользу imbot.v2.* — обновлено здесь и в
 adapters/bitrix/. Если в БД уже есть данные в старом формате {"module": <int>}, потребуется
 миграция данных (не только схемы) при апгрейде существующей установки.
+
+ПРИМЕЧАНИЕ (seller: pipeline вместо привязки к client напрямую): один клиент (Bitrix-портал)
+может продавать несколько разных направлений (например, автозапчасти и пироги) — у каждого
+свой Telegram-бот, свой каталог, свои поля сделки и своя воронка. Поэтому SellerPipeline —
+это отдельная сущность "одно направление продаж", а не просто настройка внутри Client.
+KnowledgeChunk скоупится по pipeline_id (а не member_id), чтобы каталог одного направления
+не подмешивался в поиск другого направления того же клиента.
 """
 from __future__ import annotations
 
@@ -121,6 +128,109 @@ class TestSession(Base):
     )
 
 
+class SellerPipeline(Base):
+    """
+    Одно направление продаж = один Telegram-бот = свой каталог/КБ/воронка.
+    Один клиент (Bitrix-портал) может иметь несколько pipeline одновременно
+    (например, "Автозапчасти" и "Пироги") — каждый работает через свой
+    Telegram bot token, свою Открытую линию (imconnector) и свой набор
+    knowledge_chunks. seller_service.py при этом один и тот же код для всех
+    pipeline — разница только в данных этой таблицы.
+    """
+
+    __tablename__ = "seller_pipelines"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    member_id: Mapped[str] = mapped_column(String, ForeignKey("clients.member_id"), nullable=False)
+
+    name: Mapped[str] = mapped_column(String, nullable=False)  # "Автозапчасти", "Пироги" — для админки/логов
+
+    # Отдельный токен на каждый Telegram-бот. Адаптер определяет pipeline_id
+    # по тому, на какой вебхук/токен пришёл апдейт — до всякого обращения к AI.
+    telegram_bot_token: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+
+    bitrix_category_id: Mapped[int] = mapped_column(Integer, nullable=False)  # направление сделки в CRM
+    # Список ID каталогов Bitrix (IBLOCK/CATALOG_ID товарных каталогов CRM),
+    # которые относятся к этой сфере. Один pipeline может объединять несколько
+    # каталогов (например, "Ноутбуки" + "Телефоны" + "Железо" — одна сфера,
+    # один бот, одна воронка, но три каталога синхронизируются в его
+    # knowledge_chunks). Используется в tasks/ingest_tasks.py при синхронизации.
+    bitrix_catalog_ids: Mapped[list[int]] = mapped_column(JSON, nullable=False, default=list)
+    bitrix_line_id: Mapped[int] = mapped_column(Integer, nullable=False)      # Открытая линия под imconnector
+
+    # Схема полей для сбора у клиента, специфичная для этого направления.
+    # [{"key": "quantity", "label": "Количество", "required": true, "bitrix_field": "UF_CRM_..."}, ...]
+    field_schema: Mapped[list[dict]] = mapped_column(JSON, nullable=False, default=list)
+
+    # Стадии воронки этого направления, в порядке прохождения.
+    # [{"key": "new", "bitrix_stage_id": "NEW", "description": "..."}, ...]
+    # Первый элемент списка — стадия по умолчанию для новой SellerSession.
+    stages: Mapped[list[dict]] = mapped_column(JSON, nullable=False, default=list)
+
+    is_active: Mapped[bool] = mapped_column(default=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class SellerSession(Base):
+    """
+    Состояние диалога с одним клиентом Telegram в рамках одного SellerPipeline.
+    Аналог TestSession, но для модуля 'seller': здесь копится карточка будущей
+    сделки (collected_fields) и текущая стадия воронки, вместо вопросов теста.
+
+    Сделка в CRM создаётся сразу при первом сообщении клиента (пустая/минимальная
+    карточка, дозаполняется по ходу диалога) — так менеджер видит обращение сразу,
+    а не только когда AI соберёт все обязательные поля.
+    """
+
+    __tablename__ = "seller_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    pipeline_id: Mapped[int] = mapped_column(ForeignKey("seller_pipelines.id"), nullable=False)
+
+    telegram_chat_id: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    # Bitrix-стороние идентификаторы, полученные от imconnector.send.messages
+    # при первом сообщении клиента. None, пока чат ещё не создан в Bitrix.
+    bitrix_chat_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    bitrix_dialog_id: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    # ID сделки в CRM. Создаётся сразу при первом сообщении клиента (см. докстринг класса).
+    bitrix_deal_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    collected_fields: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    current_stage_key: Mapped[str] = mapped_column(String, nullable=False)
+
+    # id последнего сообщения бота в Telegram — нужен адаптеру, чтобы решать
+    # редактировать это сообщение (editMessageText) или отправлять новое.
+    last_bot_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    status: Mapped[str] = mapped_column(String, default="active")  # 'active' | 'completed' | 'escalated'
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status in ('active', 'completed', 'escalated')", name="ck_seller_sessions_status"
+        ),
+        # Один активный диалог на клиента в рамках одного pipeline — защита от
+        # дублей при повторных/гоночных апдейтах Telegram, как у TestSession.
+        Index(
+            "ux_seller_sessions_active_per_chat",
+            "pipeline_id",
+            "telegram_chat_id",
+            unique=True,
+            postgresql_where=(status == "active"),  # type: ignore[arg-type]
+        ),
+    )
+
+
 class KnowledgeChunk(Base):
     """
     Единое хранилище знаний модуля 'seller' — и каталог, и База Знаний превращаются
@@ -133,12 +243,16 @@ class KnowledgeChunk(Base):
 
     source_id — исходный идентификатор (ID товара в CRM, или ID документа КБ) — нужен,
     чтобы при повторной синхронизации каталога обновлять существующий чанк, а не плодить дубли.
+
+    ИЗМЕНЕНИЕ: раньше скоупилось по member_id, теперь по pipeline_id — потому что
+    у одного клиента каталог различается между направлениями продаж (см. SellerPipeline),
+    а не только между разными клиентами.
     """
 
     __tablename__ = "knowledge_chunks"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    member_id: Mapped[str] = mapped_column(String, ForeignKey("clients.member_id"), nullable=False)
+    pipeline_id: Mapped[int] = mapped_column(ForeignKey("seller_pipelines.id"), nullable=False)
 
     source_type: Mapped[str] = mapped_column(String, nullable=False)  # 'catalog' | 'kb'
     source_id: Mapped[str] = mapped_column(String, nullable=False)
@@ -156,7 +270,7 @@ class KnowledgeChunk(Base):
         # существующую строку (upsert по этому ключу), а не создаёт дубль.
         Index(
             "ux_knowledge_chunks_source",
-            "member_id",
+            "pipeline_id",
             "source_type",
             "source_id",
             unique=True,

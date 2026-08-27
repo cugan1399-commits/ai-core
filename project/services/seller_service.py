@@ -6,17 +6,22 @@
 knowledge_chunks). Ничего специфичного под "товары" или "услуги" в коде нет.
 
 Пайплайн на каждое сообщение клиента:
-1. RAG по knowledge_chunks этого pipeline (как раньше) — контекст для ответа.
-2. Один вызов Claude с tool use: модель одновременно (а) формулирует ответ
+1. Если это нажатие кнопки подтверждения (text == "confirm_order") — сразу
+   финальный переход воронки, без обращения к AI (см. _confirm_order).
+2. Иначе — RAG по knowledge_chunks этого pipeline, контекст для ответа.
+3. Один вызов Claude с tool use: модель одновременно (а) формулирует ответ
    клиенту, (б) решает, какие из ещё не заполненных полей можно заполнить
    из этого сообщения, (в) решает, нужно ли сменить стадию воронки.
    Решение через инструмент update_deal, а не парсинг текста ответа — по той
-   же причине, что и ESCALATION_MARKER в предыдущей версии: структурированный
-   вывод надёжнее эвристик над свободным текстом.
-3. Если модель не уверена в ответе по контексту — тот же ESCALATION_MARKER,
-   что и раньше, эскалация оператору через imopenlines.bot.session.operator.
-4. Изменения из update_deal применяются к SellerSession и синхронизируются
+   же причине, что и ESCALATION_MARKER: структурированный вывод надёжнее
+   эвристик над свободным текстом.
+4. Если модель не уверена в ответе по контексту — ESCALATION_MARKER,
+   эскалация оператору через imopenlines.bot.session.operator.
+5. Изменения из update_deal применяются к SellerSession и синхронизируются
    в CRM (crm.deal.update) сразу, а не отложенно.
+6. Если после этого шага все required-поля собраны и кнопка ещё не
+   показывалась — в AgentReply.actions добавляется кнопка подтверждения
+   заказа (детерминированная логика, не решение модели).
 
 Сделка в CRM создаётся сразу при первом сообщении клиента (см. models.py:
 SellerSession docstring) — до всякого AI-вызова, минимальной карточкой.
@@ -111,17 +116,27 @@ def _build_system_prompt(pipeline: SellerPipeline, session: SellerSession, conte
 Отвечай кратко, на языке клиента, и веди диалог к завершению сделки."""
 
 
-async def handle(pipeline: SellerPipeline, payload: dict) -> None:
+def _all_required_fields_collected(pipeline: SellerPipeline, session: SellerSession) -> bool:
+    required_keys = {f["key"] for f in pipeline.field_schema if f.get("required")}
+    return required_keys.issubset(session.collected_fields.keys())
+
+
+async def handle(pipeline: SellerPipeline, payload: dict) -> AgentReply | None:
     """
     Точка входа — вызывается из tasks/seller_tasks.py.
     payload — нормализованное сообщение от Telegram-адаптера:
     {"telegram_chat_id": int, "telegram_user_id": int, "text": str, "message_id": int}
+    Если text == "confirm_order" — это нажатие кнопки подтверждения (адаптер
+    превращает callback_query в такой же payload, см. adapters/telegram/bot_handler.py).
     """
     message_text = (payload.get("text") or "").strip()
     if not message_text:
-        return
+        return None
 
     session = await _get_or_create_session(pipeline, payload)
+
+    if message_text == "confirm_order":
+        return await _confirm_order(pipeline, session)
 
     chunks = await _retrieve_relevant_chunks(pipeline.id, message_text)
     context = "\n\n".join(f"[{c.source_type}] {c.text}" for c in chunks) or "(база знаний пуста)"
@@ -130,7 +145,7 @@ async def handle(pipeline: SellerPipeline, payload: dict) -> None:
 
     if reply == ESCALATION_MARKER:
         await _escalate_to_operator(pipeline, session)
-        return
+        return None
 
     if tool_input:
         await _apply_deal_update(pipeline, session, tool_input)
@@ -145,9 +160,15 @@ async def handle(pipeline: SellerPipeline, payload: dict) -> None:
             {"botId": bot_id, "dialogId": session.bitrix_dialog_id, "fields[message]": reply},
         )
 
-    # Отправку в сам Telegram и решение edit vs new message делает адаптер —
-    # эта функция только возвращает AgentReply дальше по цепочке.
-    return AgentReply(text=reply)
+    actions = []
+    if not session.confirmation_shown and _all_required_fields_collected(pipeline, session):
+        actions.append({"label": "Подтвердить заказ", "value": "confirm_order"})
+        async with get_session() as db:
+            db.add(session)
+            session.confirmation_shown = True
+            await db.commit()
+
+    return AgentReply(text=reply, actions=actions)
 
 
 async def _get_or_create_session(pipeline: SellerPipeline, payload: dict) -> SellerSession:
@@ -254,6 +275,30 @@ async def _apply_deal_update(pipeline: SellerPipeline, session: SellerSession, t
         client = await _get_client(pipeline.member_id)
         update_payload["id"] = session.bitrix_deal_id
         await call_bitrix_method(client, "crm.deal.update", update_payload)
+
+
+async def _confirm_order(pipeline: SellerPipeline, session: SellerSession) -> AgentReply:
+    """
+    Клиент нажал кнопку подтверждения — финальный переход воронки.
+    Допущение: последний элемент pipeline.stages — это финальная/успешная
+    стадия. Проверить при создании pipeline, что порядок stages это отражает.
+    """
+    final_stage = pipeline.stages[-1]
+    async with get_session() as db:
+        db.add(session)
+        session.current_stage_key = final_stage["key"]
+        session.status = "completed"
+        await db.commit()
+
+    if session.bitrix_deal_id:
+        client = await _get_client(pipeline.member_id)
+        await call_bitrix_method(
+            client,
+            "crm.deal.update",
+            {"id": session.bitrix_deal_id, "fields[STAGE_ID]": final_stage["bitrix_stage_id"]},
+        )
+
+    return AgentReply(text="Спасибо! Ваш заказ подтверждён, менеджер свяжется с вами для уточнения деталей.")
 
 
 async def _escalate_to_operator(pipeline: SellerPipeline, session: SellerSession) -> None:

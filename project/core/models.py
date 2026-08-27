@@ -150,13 +150,14 @@ class SellerPipeline(Base):
     telegram_bot_token: Mapped[str] = mapped_column(String, nullable=False, unique=True)
 
     bitrix_category_id: Mapped[int] = mapped_column(Integer, nullable=False)  # направление сделки в CRM
-    # Список ID каталогов Bitrix (IBLOCK/CATALOG_ID товарных каталогов CRM),
-    # которые относятся к этой сфере. Один pipeline может объединять несколько
-    # каталогов (например, "Ноутбуки" + "Телефоны" + "Железо" — одна сфера,
-    # один бот, одна воронка, но три каталога синхронизируются в его
-    # knowledge_chunks). Используется в tasks/ingest_tasks.py при синхронизации.
-    bitrix_catalog_ids: Mapped[list[int]] = mapped_column(JSON, nullable=False, default=list)
     bitrix_line_id: Mapped[int] = mapped_column(Integer, nullable=False)      # Открытая линия под imconnector
+
+    # Список ID каталогов Bitrix (товарных каталогов CRM), которые относятся
+    # к этой сфере. Один pipeline может объединять несколько каталогов
+    # (например, "Ноутбуки" + "Телефоны" + "Железо" — одна сфера, один бот,
+    # одна воронка, но три каталога синхронизируются в его knowledge_chunks).
+    # Используется в tasks/ingest_tasks.py при синхронизации.
+    bitrix_catalog_ids: Mapped[list[int]] = mapped_column(JSON, nullable=False, default=list)
 
     # Схема полей для сбора у клиента, специфичная для этого направления.
     # [{"key": "quantity", "label": "Количество", "required": true, "bitrix_field": "UF_CRM_..."}, ...]
@@ -165,6 +166,7 @@ class SellerPipeline(Base):
     # Стадии воронки этого направления, в порядке прохождения.
     # [{"key": "new", "bitrix_stage_id": "NEW", "description": "..."}, ...]
     # Первый элемент списка — стадия по умолчанию для новой SellerSession.
+    # ПОСЛЕДНИЙ элемент — финальная/успешная стадия (см. seller_service._confirm_order).
     stages: Mapped[list[dict]] = mapped_column(JSON, nullable=False, default=list)
 
     is_active: Mapped[bool] = mapped_column(default=True)
@@ -207,6 +209,11 @@ class SellerSession(Base):
     # id последнего сообщения бота в Telegram — нужен адаптеру, чтобы решать
     # редактировать это сообщение (editMessageText) или отправлять новое.
     last_bot_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # Показана ли клиенту кнопка подтверждения заказа. Нужен отдельный флаг,
+    # а не просто "все required-поля собраны" — иначе кнопка будет всплывать
+    # заново в КАЖДОМ ответе после того, как поля уже собраны.
+    confirmation_shown: Mapped[bool] = mapped_column(default=False)
 
     status: Mapped[str] = mapped_column(String, default="active")  # 'active' | 'completed' | 'escalated'
 

@@ -138,12 +138,13 @@ async def handle(pipeline: SellerPipeline, payload: dict) -> AgentReply | None:
     if message_text == "confirm_order":
         return await _confirm_order(pipeline, session)
 
-    import os
+        import os
     if os.environ.get("SKIP_RAG") == "true":
-    context = "(RAG временно отключён)"
+        context = "(RAG временно отключён)"
     else:
-    chunks = await _retrieve_relevant_chunks(pipeline.id, message_text)
-    context = "\n\n".join(f"[{c.source_type}] {c.text}" for c in chunks) or "(база знаний пуста)"
+        chunks = await _retrieve_relevant_chunks(pipeline.id, message_text)
+        context = "\n\n".join(f"[{c.source_type}] {c.text}" for c in chunks) or "(база знаний пуста)"
+
     reply, tool_input = await _generate_reply(pipeline, session, message_text, context)
 
     if reply == ESCALATION_MARKER:

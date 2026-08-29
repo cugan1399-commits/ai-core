@@ -22,6 +22,12 @@ from core.db import get_session
 logging.basicConfig(level=logging.INFO)
 
 app = FastAPI(title="Multi-tenant Bitrix24 AI core")
+import resource
+
+@app.on_event("startup")
+async def log_memory():
+    mem_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+    logging.info(f"RSS after startup: {mem_mb:.1f} MB")
 
 app.include_router(bitrix_auth_router)
 app.include_router(bitrix_bot_router)

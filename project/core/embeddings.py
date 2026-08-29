@@ -17,9 +17,19 @@ from config import EMBEDDING_MODEL_NAME
 
 @lru_cache(maxsize=1)
 def _get_model():
-    from sentence_transformers import SentenceTransformer
+    import resource
+    import logging
 
-    return SentenceTransformer(EMBEDDING_MODEL_NAME)
+    before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+    logging.info(f"RSS before loading embedding model: {before:.1f} MB")
+
+    from sentence_transformers import SentenceTransformer
+    model = SentenceTransformer(EMBEDDING_MODEL_NAME)
+
+    after = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+    logging.info(f"RSS after loading embedding model: {after:.1f} MB")
+
+    return model
 
 
 def embed_text(text: str) -> list[float]:

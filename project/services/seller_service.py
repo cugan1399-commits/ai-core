@@ -29,6 +29,7 @@ SellerSession docstring) — до всякого AI-вызова, минимал
 from __future__ import annotations
 
 from functools import lru_cache
+import os
 
 from anthropic import AsyncAnthropic
 from sqlalchemy import select
@@ -138,7 +139,7 @@ async def handle(pipeline: SellerPipeline, payload: dict) -> AgentReply | None:
     if message_text == "confirm_order":
         return await _confirm_order(pipeline, session)
 
-        import os
+    
     if os.environ.get("SKIP_RAG") == "true":
         context = "(RAG временно отключён)"
     else:

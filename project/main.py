@@ -24,10 +24,17 @@ logging.basicConfig(level=logging.INFO)
 app = FastAPI(title="Multi-tenant Bitrix24 AI core")
 import resource
 
+import asyncio
+
+
 @app.on_event("startup")
-async def log_memory():
-    mem_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
-    logging.info(f"RSS after startup: {mem_mb:.1f} MB")
+async def log_memory_periodically():
+    async def _loop():
+        while True:
+            mem_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+            logging.info(f"RSS (max so far): {mem_mb:.1f} MB")
+            await asyncio.sleep(15)
+    asyncio.create_task(_loop())
 
 app.include_router(bitrix_auth_router)
 app.include_router(bitrix_bot_router)

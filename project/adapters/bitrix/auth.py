@@ -25,13 +25,19 @@ OAuth-хендшейк с Bitrix24.
 вызывается (и GET, и POST) при каждом открытии. То есть в этом сценарии
 именно /oauth/redirect — фактическая точка входа установки, а /oauth/install
 (если он вообще когда-то вызывается Bitrix — например, при установке из
-маркетплейса, а не по прямой ссылке) — редкий/альтернативный путь. Оба
-хендлера теперь используют общую _upsert_client_and_bootstrap(), но читают
-токены в РАЗНЫХ форматах:
-- /oauth/install ожидает вложенные ключи auth[domain], auth[access_token]
-  и т.д. (этот формат подтверждён раньше для событий ONAPPINSTALL);
-- /oauth/redirect ожидает ПЛОСКИЕ ключи DOMAIN, AUTH_ID, REFRESH_ID,
-  member_id и т.д. — формат реально наблюдался в запросах на этот путь.
+маркетплейса, а не по прямой ссылке) — редкий/альтернативный путь.
+
+ВАЖНО #2 (найдено на реальном запросе, тот же день): Bitrix на /oauth/redirect
+РАЗБИВАЕТ данные между query-параметрами URL и телом POST-запроса — это не
+два отдельных формата на выбор, а один запрос, у которого часть полей в одном
+месте, часть в другом:
+  В QUERY STRING:  DOMAIN, PROTOCOL, LANG, APP_SID
+  В ТЕЛЕ POST:     AUTH_ID, REFRESH_ID, member_id, APPLICATION_TOKEN,
+                    AUTH_EXPIRES, SERVER_ENDPOINT, APPLICATION_SCOPE, ...
+Первая версия этого хендлера брала для POST только form-данные и поэтому не
+находила DOMAIN (он был в query) — из-за этого ветка "нет полного набора
+токенов" срабатывала даже на запросах с реальными токенами. Исправлено:
+для POST оба источника объединяются в один dict (query — база, form поверх).
 """
 from __future__ import annotations
 
@@ -64,7 +70,7 @@ async def _upsert_client_and_bootstrap(
     обновить токены существующему), зарегистрировать ботов и подписаться на
     ONCRMDEALUPDATE. Вынесена в отдельную функцию, чтобы оба хендлера не
     расходились в поведении — разница между ними только в том, ОТКУДА они
-    достают эти пять значений из тела запроса (см. докстринг модуля).
+    достают эти пять значений из запроса (см. докстринг модуля).
     """
     async with get_session() as session:
         result = await session.execute(select(Client).where(Client.member_id == member_id))
@@ -143,22 +149,25 @@ async def oauth_install(request: Request):
 async def oauth_redirect(request: Request):
     """
     Фактическая точка входа установки/открытия приложения — см. докстринг
-    модуля. Bitrix шлёт сюда ПЛОСКИЕ поля (без auth[...] обёртки):
-      DOMAIN       — домен портала
-      member_id    — идентификатор портала (тот же member_id, что и в
-                     событиях ONAPPINSTALL/imbot)
-      AUTH_ID      — access_token
-      REFRESH_ID   — refresh_token
-      APP_SID      — application_token (используется в проверке application_token
-                     у событий бота — подтверждено раньше для ONIMBOTV2MESSAGEADD)
+    модуля. Bitrix РАЗБИВАЕТ поля между query string и телом POST:
+      query:  DOMAIN, PROTOCOL, LANG, APP_SID
+      тело:   AUTH_ID (=access_token), REFRESH_ID (=refresh_token),
+              member_id, APPLICATION_TOKEN, ...
+    Поэтому для POST объединяем оба источника в один dict — query как база,
+    form поверх (на случай пересечения имён форма имеет приоритет).
+
     GET-запрос (первый заход без токенов, просто открытие ссылки на
-    приложение) не содержит этих полей вообще — тогда просто отдаём страницу-
-    заглушку, ничего не создавая в БД, чтобы не плодить "пустых" клиентов.
+    приложение) не содержит AUTH_ID/REFRESH_ID вообще — тогда просто отдаём
+    страницу-заглушку, ничего не создавая в БД, чтобы не плодить "пустых"
+    клиентов.
     """
+    query = dict(request.query_params)
+
     if request.method == "GET":
-        params = dict(request.query_params)
+        params = query
     else:
-        params = dict(await request.form())
+        form = dict(await request.form())
+        params = {**query, **form}
 
     logger.info("Получен запрос на /oauth/redirect (%s), поля: %s", request.method, params)
 
@@ -166,7 +175,7 @@ async def oauth_redirect(request: Request):
     member_id = params.get("member_id")
     access_token = params.get("AUTH_ID")
     refresh_token = params.get("REFRESH_ID")
-    application_token = params.get("APP_SID", "")
+    application_token = params.get("APPLICATION_TOKEN", "")
 
     if not all([domain, member_id, access_token, refresh_token]):
         logger.warning(

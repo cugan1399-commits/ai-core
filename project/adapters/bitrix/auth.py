@@ -13,6 +13,9 @@ OAuth-хендшейк с Bitrix24.
   из первой версии этого файла помечен Bitrix как устаревший). Регистрируем в
   гибридном режиме (type='bot', isSupportOpenline=true), чтобы бот одинаково
   работал и в Открытых линиях, и в обычных диалогах.
+- Подписка на ONCRMDEALUPDATE (см. _ensure_deal_update_event_bound) НЕ глушит
+  ошибки event.bind молча — если Bitrix откажет (например, не хватает scope),
+  это должно быть видно в логах, а не тихо теряться под except RuntimeError.
 """
 from __future__ import annotations
 
@@ -95,9 +98,7 @@ async def oauth_install(request: Request):
         await session.refresh(client)
 
         await _ensure_bots_registered(session, client)
-        await _ensure_bots_registered(session, client)
         await _ensure_deal_update_event_bound(client)
-        await session.commit()
         await session.commit()
 
     return {"result": True}
@@ -138,15 +139,27 @@ async def _ensure_bots_registered(session, client: Client) -> None:
         client.bot_ids = bot_ids
         session.add(client)
 
+
 async def _ensure_deal_update_event_bound(client: Client) -> None:
-    try:
-        await call_bitrix_method(
-            client,
-            "event.bind",
-            {"event": "ONCRMDEALUPDATE", "handler": f"{_public_base_url()}/bitrix/events/deal-update"},
-        )
-    except RuntimeError:
-        pass  # уже подписано ранее — не ошибка
+    """
+    Подписывается на ONCRMDEALUPDATE, чтобы изменение стадии сделки в Bitrix
+    (менеджер закрыл/провалил сделку вручную) закрывало соответствующую
+    SellerSession в нашей БД — см. tasks/deal_sync_tasks.py.
+
+    ВАЖНО: раньше здесь стоял `except RuntimeError: pass` с расчётом на
+    "уже подписано ранее — не ошибка". На деле call_bitrix_method бросает
+    RuntimeError при ЛЮБОЙ ошибке Bitrix API (см. bitrix_client.py), не
+    только при повторной подписке — то есть настоящие проблемы (например,
+    не хватает scope у приложения) тоже тихо проглатывались и не были видны
+    в логах. Пока не подтверждено, что Bitrix ЛОЯЛЬНО обрабатывает повторный
+    event.bind (обычно да — просто не плодит дубль подписки), исключение
+    сознательно НЕ глушится: если что-то пойдёт не так, это будет видно.
+    """
+    await call_bitrix_method(
+        client,
+        "event.bind",
+        {"event": "ONCRMDEALUPDATE", "handler": f"{_public_base_url()}/bitrix/events/deal-update"},
+    )
 
 
 def _public_base_url() -> str:

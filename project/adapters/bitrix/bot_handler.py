@@ -37,13 +37,15 @@ payload["chat"]) ожидают services/*.handle() (см. testing_service.py).
 from __future__ import annotations
 
 import logging
-
+from tasks.deal_sync_tasks import sync_deal_stage
 from fastapi import APIRouter, HTTPException, Request
 from sqlalchemy import select
+
 
 from core.db import get_session
 from core.models import Client
 from tasks.dispatch import process_bot_message
+
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -120,4 +122,30 @@ async def bot_handler(request: Request):
     # Ставим задачу в очередь и сразу отвечаем Bitrix — не ждём выполнения.
     process_bot_message.delay(member_id=client.member_id, module_name=module_name, payload=payload)
 
+    return {"result": True}
+
+@router.post("/bitrix/events/deal-update")
+async def deal_update_handler(request: Request):
+    form = await request.form()
+    if not form or form.get("event") != "ONCRMDEALUPDATE":
+        return {"result": True}
+
+    domain = form.get("auth[domain]")
+    application_token = form.get("auth[application_token]")
+    deal_id = form.get("data[FIELDS][ID]")
+
+    if not domain or not application_token or not deal_id:
+        logger.warning("Неполные данные события ONCRMDEALUPDATE — пропускаем.")
+        return {"result": True}
+
+    async with get_session() as session:
+        result = await session.execute(
+            select(Client).where(Client.domain == domain, Client.is_active.is_(True))
+        )
+        client = result.scalar_one_or_none()
+
+    if client is None or application_token != client.application_token:
+        raise HTTPException(status_code=403, detail="Неверный клиент/application_token")
+
+    sync_deal_stage.delay(client.member_id, int(deal_id))
     return {"result": True}

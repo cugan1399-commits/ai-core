@@ -21,6 +21,7 @@ celery_app = Celery(
         "tasks.dispatch",
         "tasks.ingest_tasks",
         "tasks.seller_tasks",
+        "tasks.deal_sync_tasks",
         # "tasks.wallet_tasks",  # будущий не-Bitrix модуль — подключается сюда же
     ],
 )

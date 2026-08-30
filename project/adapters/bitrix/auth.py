@@ -95,6 +95,9 @@ async def oauth_install(request: Request):
         await session.refresh(client)
 
         await _ensure_bots_registered(session, client)
+        await _ensure_bots_registered(session, client)
+        await _ensure_deal_update_event_bound(client)
+        await session.commit()
         await session.commit()
 
     return {"result": True}
@@ -134,6 +137,16 @@ async def _ensure_bots_registered(session, client: Client) -> None:
     if changed:
         client.bot_ids = bot_ids
         session.add(client)
+
+async def _ensure_deal_update_event_bound(client: Client) -> None:
+    try:
+        await call_bitrix_method(
+            client,
+            "event.bind",
+            {"event": "ONCRMDEALUPDATE", "handler": f"{_public_base_url()}/bitrix/events/deal-update"},
+        )
+    except RuntimeError:
+        pass  # уже подписано ранее — не ошибка
 
 
 def _public_base_url() -> str:

@@ -187,12 +187,27 @@ async def _get_or_create_session(pipeline: SellerPipeline, payload: dict) -> Sel
             )
         )
         session = result.scalar_one_or_none()
-        if session is not None:
+
+    if session is not None:
+        # ВАЖНО (2026-08-30): не доверяем status="active" вслепую — событие
+        # ONCRMDEALUPDATE подписано (event.bind, включая auth_type=2), но ни
+        # разу не было реально доставлено на handler после более чем 15
+        # проверенных изменений стадии тестовой сделки. Вместо того чтобы
+        # полагаться на недоставляемый вебхук, спрашиваем Bitrix напрямую,
+        # закрыта ли сделка. Если закрыта — закрываем сессию тут же и падаем
+        # в создание новой, вместо вечного возврата протухшей сессии.
+        if session.bitrix_deal_id and await _is_deal_closed(pipeline.member_id, session.bitrix_deal_id):
+            async with get_session() as db:
+                db.add(session)
+                session.status = "completed"
+                await db.commit()
+        else:
             return session
 
-        # Новый клиент — сразу создаём минимальную сделку в CRM (см. докстринг
-        # SellerSession в models.py: осознанное решение делать это сразу, а не
-        # после сбора всех полей).
+    async with get_session() as db:
+        # Новый клиент (или предыдущая сделка уже закрыта) — сразу создаём
+        # минимальную сделку в CRM (см. докстринг SellerSession в models.py:
+        # осознанное решение делать это сразу, а не после сбора всех полей).
         client = await _get_client(pipeline.member_id)
         deal = await call_bitrix_method(
             client,
@@ -210,6 +225,22 @@ async def _get_or_create_session(pipeline: SellerPipeline, payload: dict) -> Sel
         await db.commit()
         await db.refresh(session)
         return session
+
+
+async def _is_deal_closed(member_id: str, deal_id: int) -> bool:
+    """
+    True, если сделка в Bitrix уже закрыта (успешно или провалена).
+    Любая ошибка запроса (сделка удалена, временная недоступность Bitrix и
+    т.п.) трактуется как "не закрыта" — чтобы не плодить новые сделки на
+    ровном месте из-за сетевого сбоя; в худшем случае просто попробуем ещё
+    раз на следующем сообщении.
+    """
+    try:
+        client = await _get_client(member_id)
+        deal = await call_bitrix_method(client, "crm.deal.get", {"id": deal_id})
+    except Exception:  # noqa: BLE001
+        return False
+    return deal.get("result", {}).get("CLOSED") == "Y"
 
 
 async def _get_client(member_id: str) -> Client:

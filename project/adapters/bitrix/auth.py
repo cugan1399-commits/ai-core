@@ -247,11 +247,31 @@ async def _ensure_deal_update_event_bound(client: Client) -> None:
     event.bind (обычно да — просто не плодит дубль подписки), исключение
     сознательно НЕ глушится: если что-то пойдёт не так, это будет видно.
     """
+    handler_url = f"{_public_base_url()}/bitrix/events/deal-update"
+
+    # Сначала отвязываем любую существующую подписку на это событие+handler —
+    # Bitrix возвращает 400 Bad Request при попытке зарегистрировать то же
+    # событие+handler повторно с ДРУГИМ auth_type поверх уже существующей
+    # привязки. unbind безопасен, даже если подписки ещё не было (Bitrix
+    # просто вернёт 0 отвязанных подписок, не ошибку).
+    try:
+        await call_bitrix_method(
+            client, "event.unbind", {"event": "ONCRMDEALUPDATE", "handler": handler_url}
+        )
+    except RuntimeError:
+        pass  # подписки не было — не проблема
+
+    # auth_type=2 (ЦЕЛОЕ число, не строка "2" — со строкой Bitrix вернул 400)
+    # привязывает доставку события к ПОРТАЛУ в целом, а не к сессии/токену
+    # того пользователя, что был активен в момент установки — это устраняет
+    # ситуацию, когда подписка формально существует (event.get её показывает),
+    # но реальные события не доставляются, если стадию сделки меняет другой
+    # пользователь или после протухания исходной сессии.
     await call_bitrix_method(
-    client,
-    "event.bind",
-    {"event": "ONCRMDEALUPDATE", "handler": f"{_public_base_url()}/bitrix/events/deal-update"},
-)
+        client,
+        "event.bind",
+        {"event": "ONCRMDEALUPDATE", "handler": handler_url, "auth_type": 2},
+    )
 
 
 def _public_base_url() -> str:

@@ -248,10 +248,10 @@ async def _ensure_deal_update_event_bound(client: Client) -> None:
     сознательно НЕ глушится: если что-то пойдёт не так, это будет видно.
     """
     await call_bitrix_method(
-        client,
-        "event.bind",
-        {"event": "ONCRMDEALUPDATE", "handler": f"{_public_base_url()}/bitrix/events/deal-update"},
-    )
+    client,
+    "event.bind",
+    {"event": "ONCRMDEALUPDATE", "handler": f"{_public_base_url()}/bitrix/events/deal-update"},
+)
 
 
 def _public_base_url() -> str:
